@@ -27,10 +27,11 @@ export class TokenProcessor {
   }
 
   // Parse token lines into events and BPM
-  private parseTokens(lines: string[]): { bpm: number; events: Event[] } {
+  private parseTokens(lines: string[]): { bpm: number; timebase: number; events: Event[] } {
     const events: Event[] = [];
     let time = 0;
     let bpm = 120;
+    let timebase = 480;
 
     for (const raw of lines) {
       const line = raw.trim();
@@ -40,6 +41,11 @@ export class TokenProcessor {
 
       if (parts[0] === 'TEMPO') {
         bpm = parseInt(parts[1]);
+        continue;
+      }
+
+      if (parts[0] === 'TIMEBASE') {
+        timebase = parseInt(parts[1]);
         continue;
       }
 
@@ -55,7 +61,22 @@ export class TokenProcessor {
           velocity: parseInt(parts[3]),
           time,
         });
-        time = 0;
+        continue;
+      }
+
+      if (parts[0] === 'NOTE_START') {
+        const lastEvent = events[events.length - 1];
+        if (lastEvent && lastEvent.type === 'on') {
+          lastEvent.startTimeSec = parseFloat(parts[1]);
+        }
+        continue;
+      }
+
+      if (parts[0] === 'NOTE_END') {
+        const lastEvent = events[events.length - 1];
+        if (lastEvent && lastEvent.type === 'on') {
+          lastEvent.endTimeSec = parseFloat(parts[1]);
+        }
         continue;
       }
 
@@ -65,11 +86,10 @@ export class TokenProcessor {
           note: this.noteToMidi(parts[1]),
           time,
         });
-        time = 0;
       }
     }
 
-    return { bpm, events };
+    return { bpm, timebase, events };
   }
 
   // Main function to process tokens and generate MIDI file
@@ -87,7 +107,7 @@ export class TokenProcessor {
     const lines: string[] = inputTokens.split('\n');
 
     // Parse the tokens to get bpm and events
-    const { bpm, events } = this.parseTokens(lines);
+    const { bpm, timebase, events } = this.parseTokens(lines);
 
     // Initialize a new, empty MIDI file
     const midi = new Midi();
@@ -102,31 +122,45 @@ export class TokenProcessor {
     let activeNotes: Record<number, { start: number; velocity: number }> = {}; // noteNumber → startTick & velocity
 
     // Process the events to generate MIDI notes
-    for (const e of events) {
-      currentTick += e.time;
+    events.forEach((event) => {
+      currentTick = event.time;
 
-      if (e.type === 'on') {
-        activeNotes[e.note] = {
+      // If we have precise timing from NOTE_START/NOTE_END, use it
+      if (event.startTimeSec !== undefined && event.endTimeSec !== undefined) {
+        const startTicks = Math.round((event.startTimeSec * bpm * timebase) / 60);
+        const endTicks = Math.round((event.endTimeSec * bpm * timebase) / 60);
+
+        track.addNote({
+          midi: event.note,
+          ticks: startTicks,
+          durationTicks: endTicks - startTicks,
+          velocity: event.velocity! / 127,
+        });
+        return;
+      }
+
+      if (event.type === 'on') {
+        activeNotes[event.note] = {
           start: currentTick,
-          velocity: e.velocity! / 127, // Ensure velocity is divided by 127
+          velocity: event.velocity! / 127, // Ensure velocity is divided by 127
         };
       }
 
-      if (e.type === 'off') {
-        const note = activeNotes[e.note];
+      if (event.type === 'off') {
+        const note = activeNotes[event.note];
 
         if (note) {
           track.addNote({
-            midi: e.note,
+            midi: event.note,
             ticks: note.start,
             durationTicks: currentTick - note.start,
             velocity: note.velocity,
           });
 
-          delete activeNotes[e.note];
+          delete activeNotes[event.note];
         }
       }
-    }
+    });
 
     // Write the MIDI file to disk
     fs.writeFileSync(outputFile, Buffer.from(midi.toArray()));
@@ -139,4 +173,6 @@ interface Event {
   note: number;
   velocity?: number;
   time: number;
+  startTimeSec?: number;
+  endTimeSec?: number;
 }

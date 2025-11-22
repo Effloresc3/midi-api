@@ -88,8 +88,6 @@ export class MidiProcessor {
       process.exit(1);
     }
 
-    const tokens = this.midiToTokens(midiPath, timebase);
-    console.log(tokens);
-    return tokens;
+    return this.midiToTokens(midiPath, timebase);
   }
 }
